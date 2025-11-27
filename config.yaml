@@ -1,0 +1,70 @@
+## config.yaml
+
+# GLOBAL EXECUTION SETTINGS
+
+# If set to True, the script will run the hyperparameter grid search defined below.
+# If False, the script will run a single training/evaluation cycle using the default
+# parameters defined in the 'MODEL_DEFAULTS' section.
+RUN_GRID_SEARCH: False
+
+# 1. DATA CONFIGURATION
+DATA:
+  # Paths to the Instacart CSV files
+  FILE_PATHS:
+    orders: 'data/orders.csv'
+    prior: 'data/order_products__prior.csv'
+    products: 'data/products.csv'
+    aisles: 'data/aisles.csv'
+    departments: 'data/departments.csv'
+
+  # Time-based sampling rate for initial data loading (e.g., 0.1 for 10% of orders)
+  SAMPLING_FRACTION: 0.01
+  
+  # Total number of aggregated time slots (e.g., months) to generate
+  TIME_SERIES_SLOTS: 150
+  
+  # Factor for aggregating finer time slots (e.g., 4 aggregates 4 weekly-like slots into 1 monthly-like slot)
+  TEMPORAL_AGG_FACTOR: 4
+  
+  # Train/Test split ratio for the time series data
+  SPLIT_RATIO: 0.85
+  
+  # Minimum co-purchase frequency required to create an edge in the product graph
+  EDGE_THRESHOLD: 10
+
+
+# 2. MODEL DEFAULTS & TRAINING CONFIGURATION
+TRAINING:
+  # The length of the input demand sequence (L)
+  INPUT_SEQUENCE_LENGTH: 12
+  
+  # The length of the output forecast horizon (H)
+  OUTPUT_SEQUENCE_LENGTH: 1
+  
+  # Number of training epochs
+  EPOCHS: 2
+  
+  # Batch size for DataLoader
+  BATCH_SIZE: 8
+  
+  # Directory where model checkpoints will be saved
+  CHECKPOINT_DIR: 'model_checkpoints'
+
+MODEL_DEFAULTS:
+  # Default hidden dimension for GNN and LSTM layers (Used if GRID_SEARCH is False)
+  HIDDEN_DIM: 64
+  
+  # Default number of GNN layers (Used if GRID_SEARCH is False)
+  GNN_LAYERS: 2
+  
+  # Default learning rate (Used if GRID_SEARCH is False)
+  LR: 0.001
+
+
+# 3. GRID SEARCH CONFIGURATION
+GRID_SEARCH:
+  # Hyperparameter combinations to test.
+  PARAMETERS:
+    hidden_dim: [32, 64]
+    gnn_layers: [1, 2]
+    lr: [0.001, 0.01]
