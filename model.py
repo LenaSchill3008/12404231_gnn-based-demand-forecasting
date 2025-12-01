@@ -10,7 +10,6 @@ from tqdm import tqdm
 from typing import Tuple, Dict, Any, List
 import itertools
 
-# Helper function to ensure consistency in batch size calculation
 def _get_batch_size_and_num_nodes(tensor: torch.Tensor) -> Tuple[int, int, int]:
     """Extracts batch size (B), sequence length (L), and number of nodes (N) from the demand sequence tensor."""
     if tensor.dim() != 3:
@@ -21,12 +20,11 @@ def _get_batch_size_and_num_nodes(tensor: torch.Tensor) -> Tuple[int, int, int]:
 class GNNForecastingModel(nn.Module):
     """
     The complete GNN-LSTM hybrid model for time series forecasting on graphs.
-    It uses GNN-derived features for initial state of the LSTM and for the final prediction step.
     """
     def __init__(self, node_features: int, num_nodes: int, input_len: int, output_len: int, hidden_dim: int = 64, gnn_layers: int = 2, lr: float = 0.001):
         super(GNNForecastingModel, self).__init__()
 
-        # Store Hyperparameters
+        # Hyperparameters
         self.input_len = input_len
         self.output_len = output_len
         self.num_nodes = num_nodes
@@ -34,14 +32,14 @@ class GNNForecastingModel(nn.Module):
         self.lr = lr
         self.gnn_layers = gnn_layers
 
-        # Static GNN layers (Spatial component)
+        # GNN  
         self.gcn_layers = nn.ModuleList()
         input_dim = node_features
         for _ in range(self.gnn_layers):
             self.gcn_layers.append(GCNConv(input_dim, hidden_dim))
             input_dim = hidden_dim
 
-        # LSTM for temporal dependency modeling
+        # LSTM 
         self.lstm = nn.LSTM(
             input_size=1, 
             hidden_size=hidden_dim,
@@ -57,7 +55,7 @@ class GNNForecastingModel(nn.Module):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def get_device(self) -> torch.device:
-        """Determines the current device of the model (CPU/GPU)."""
+        """Determines the current device of the model."""
         return next(self.parameters()).device
 
     def forward(self, x_static: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor, demand_seq: torch.Tensor) -> torch.Tensor:
@@ -66,17 +64,14 @@ class GNNForecastingModel(nn.Module):
         """
         B, L, N = _get_batch_size_and_num_nodes(demand_seq)
 
-        # 1. Static GNN Processing (Spatial Aggregation)
+        # Static GNN Processing 
         h_static = x_static
         for gcn in self.gcn_layers:
             h_static = torch.relu(gcn(h_static, edge_index, edge_weight=edge_attr))
-        # h_static shape: [N, Hidden_Dim]
 
-        # 2. Sequence Preparation for LSTM
+        # Sequence Preparation for LSTM
         demand_seq_final = demand_seq.permute(0, 2, 1).reshape(-1, L).unsqueeze(-1)
 
-        # 3. LSTM Processing (Temporal Modeling)
-        
         # Initial hidden state (h0) and cell state (c0) are initialized with GNN features
         h0_expanded = h_static.unsqueeze(0).expand(B, N, self.hidden_dim)
         h0 = h0_expanded.reshape(B * N, self.hidden_dim).unsqueeze(0).contiguous()
@@ -84,26 +79,22 @@ class GNNForecastingModel(nn.Module):
 
         # Pass through LSTM
         _, (hn, _) = self.lstm(demand_seq_final, (h0, c0))
-        final_lstm_output = hn[-1] # Final hidden state [B*N, Hidden_Dim]
+        final_lstm_output = hn[-1] 
 
-        # 4. Feature Concatenation and Prediction
-
+        # Feature Concatenation and Prediction
         # Repeat GNN Output to match the batched LSTM output structure
         h_static_repeated = h_static.unsqueeze(0).expand(B, N, self.hidden_dim).reshape(B * N, self.hidden_dim)
-
-        # Concatenation: LSTM output + GNN static feature
         combined_features = torch.cat((final_lstm_output, h_static_repeated), dim=1)
 
         # Final Linear Layer for multi-step prediction
-        predictions_flat = self.output_layer(combined_features) # Shape [B*N, Output_Len (H)]
-        # Reshape to the desired output format: [B, N, H] (Batch, Nodes, Prediction Length)
+        predictions_flat = self.output_layer(combined_features) 
         predictions = predictions_flat.view(B, N, -1)
 
         return predictions
 
 class ModelTrainer:
     """
-    Handles training, evaluation, checkpointing, and data preparation (sequence creation).
+    Handles training, evaluation, checkpointing, and data preparation.
     """
     def __init__(self, model: GNNForecastingModel):
         self.model = model
@@ -111,7 +102,6 @@ class ModelTrainer:
         self.output_len = model.output_len
         self.criterion = model.criterion
         self.optimizer = model.optimizer
-        # Check if CUDA is available for GPU acceleration
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
@@ -140,7 +130,7 @@ class ModelTrainer:
             return 0
 
     def _create_sequences(self, data_ts: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Creates sliding window sequences (Input/Target) from the time series DataFrame."""
+        """Creates sliding window sequences from the time series DataFrame."""
         T, N = data_ts.shape
         sequences_in: List[np.ndarray] = []
         sequences_target: List[np.ndarray] = []
@@ -148,7 +138,6 @@ class ModelTrainer:
         data_array = data_ts.values
 
         if T < self.input_len + self.output_len:
-            print(f"Warning: Not enough time steps ({T}) to create sequences of length {self.input_len}+{self.output_len}.")
             return torch.empty((0, self.input_len, N), dtype=torch.float), torch.empty((0, self.output_len, N), dtype=torch.float)
             
         for i in range(T - self.input_len - self.output_len + 1):
@@ -172,13 +161,11 @@ class ModelTrainer:
 
     def _initialize_model(self, node_features: int, num_nodes: int, params: Dict[str, Any]) -> GNNForecastingModel:
         """Helper function to initialize a new model instance with specific parameters."""
-        # The mandatory model initialization arguments must be passed separately
         model = GNNForecastingModel(
             node_features=node_features,
             num_nodes=num_nodes,
             input_len=self.input_len,
             output_len=self.output_len,
-            # Use dictionary unpacking for optional hyperparameters
             hidden_dim=params.get('hidden_dim', 64),
             gnn_layers=params.get('gnn_layers', 2),
             lr=params.get('lr', 0.001)
@@ -229,7 +216,7 @@ class ModelTrainer:
         print("Training complete.")
 
     def evaluate_model(self, graph_data: Data, test_ts: pd.DataFrame, batch_size: int = 32) -> float:
-        """Evaluates the model on the test time series data using mini-batching."""
+        """Evaluates the model on the test time series data."""
 
         X_test, Y_test = self._create_sequences(test_ts)
         if X_test.shape[0] == 0: return 0.0
@@ -276,27 +263,26 @@ class ModelTrainer:
         node_features = graph_data.x.shape[1]
         num_nodes = graph_data.num_nodes
 
-        print(f"\n--- Starting Grid Search ({len(combinations)} total combinations) ---")
+        print(f"\nStarting Grid Search ({len(combinations)} total combinations)")
         
         for i, params in enumerate(combinations):
             print(f"\nConfiguration {i + 1}/{len(combinations)}: {params}")
             
-            # 1. Initialize a new model and trainer instance for the current config
+            # Initialize a new model and trainer instance for the current config
             current_model = self._initialize_model(node_features, num_nodes, params)
             current_trainer = ModelTrainer(current_model)
             
-            # 2. Train the model (Note: We use the existing ModelTrainer train/eval methods)
-            # Disable checkpointing during grid search to reduce I/O overhead
+            # Train the model 
             current_trainer.train_model(graph_data, train_ts, epochs=epochs, batch_size=batch_size, checkpoint_dir='temp_grid_search', save_interval=epochs + 1)
             
-            # 3. Evaluate the model on the test set
+            # Evaluate the model on the test set
             test_loss = current_trainer.evaluate_model(graph_data, test_ts, batch_size=batch_size)
             
-            # 4. Store result
+            # Store result
             current_result = {'params': params, 'test_loss': test_loss}
             results.append(current_result)
             
-            # 5. Check if this is the best result so far
+            # Check if this is the best result so far?
             if test_loss < best_loss:
                 best_loss = test_loss
                 best_params = params

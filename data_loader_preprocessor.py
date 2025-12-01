@@ -6,23 +6,18 @@ from typing import Dict, Any, List, Tuple
 from typing import Dict, Any, List, Tuple, Union
 import os
 
-# Base class for Instacart Data Operations to follow the DIP principle and facilitate potential swapping of data sources or formats.
+# Base class for Instacart Data Operations 
 class InstacartData:
     def __init__(self, data: Dict[str, pd.DataFrame]):
         self.data = data
 
     def get_df(self, name: str) -> pd.DataFrame:
-        # Returns a specific DataFrame by name.
         df = self.data.get(name)
-        if df is None:
-            raise KeyError(f"DataFrame '{name}' not found in data dictionary.")
         return df
 
     def get_product_nodes(self) -> List[int]:
-        # Helper to get unique product IDs, assuming 'products' is loaded.
         return self.get_df('products')['product_id'].unique().tolist()
 
-# Class responsible solely for loading and initial filtering 
 class DataLoader:
     """
     Loads necessary Instacart CSV files and applies time-based sampling.
@@ -59,7 +54,7 @@ class DataLoader:
         if boundary_index >= total_orders:
             return orders_df['order_id'].max()
 
-        # The boundary ID is the order_id at the calculated index (0-based)
+        # The boundary ID is the order_id at the calculated index 
         return orders_df.iloc[boundary_index - 1]['order_id']
 
     def load_data(self) -> Union[InstacartData, None]:
@@ -72,9 +67,6 @@ class DataLoader:
         if self.sampling_rate < 1.0 and order_path:
             # Calculate boundary if sampling is applied
             time_boundary_id = self._calculate_time_boundary(order_path)
-            if time_boundary_id <= 0:
-                print("Could not determine time boundary for sampling or file not found.")
-                return None
             print(f"Calculated Order ID boundary for {self.sampling_rate*100:.0f}%: {time_boundary_id}")
 
 
@@ -106,9 +98,6 @@ class DataLoader:
             except FileNotFoundError:
                 print(f"ERROR: File {path} not found. Please ensure all files are in the path.")
                 return None
-            except Exception as e:
-                print(f"An unexpected error occurred while processing {path}: {e}")
-                return None
         
         # Apply filter to 'prior' based on the sampled 'orders'
         if 'prior' in self.data and 'orders' in self.data and time_boundary_id > 0:
@@ -125,7 +114,6 @@ class DataLoader:
         return InstacartData(self.data)
 
 
-# Class dedicated to preprocessing and feature extraction 
 class DataPreprocessor:
     """
     Handles feature engineering, time series creation, and graph construction.
@@ -135,15 +123,13 @@ class DataPreprocessor:
         self.product_nodes: List[int] = self._data.get_product_nodes()
         self.product_id_to_index: Dict[int, int] = {pid: i for i, pid in enumerate(self.product_nodes)}
         self.node_features_X: np.ndarray | None = None
-        # Data for graph construction uses filtered 'prior' orders
         self.prior_data_for_graph = self._data.get_df('prior')[['order_id', 'product_id']].drop_duplicates()
 
     def _create_metadata_features(self) -> pd.DataFrame:
         """
         Helper method to merge product, aisle, and department metadata, then one-hot encode.
-        (DRY principle: centralizing feature creation logic)
         """
-        # 1. Merge metadata
+        # Merge metadata
         products_df = self._data.get_df('products')
         aisles_df = self._data.get_df('aisles')
         departments_df = self._data.get_df('departments')
@@ -151,7 +137,7 @@ class DataPreprocessor:
         product_features_df = pd.merge(products_df, aisles_df, on='aisle_id', how='left')
         product_features_df = pd.merge(product_features_df, departments_df, on='department_id', how='left')
 
-        # 2. Prepare for One-Hot-Encode
+        # Prepare for One-Hot-Encode
         product_features_encoded = product_features_df[['product_id', 'aisle_id', 'department_id']].copy()
         
         # Convert IDs to string for one-hot encoding
@@ -172,16 +158,15 @@ class DataPreprocessor:
 
     def create_node_features(self) -> np.ndarray:
         """
-        Creates the initial product node features (X) based on Aisle/Department metadata.
+        Creates the initial product node features based on Aisle/Department metadata.
         """
         print("Creating GNN node features...")
-        
         product_features_encoded = self._create_metadata_features()
         
         # Select the columns that were one-hot encoded
         feature_cols = [col for col in product_features_encoded.columns if col.startswith(('aisle_', 'dept_'))]
         
-        # 3. Save the Feature Matrix
+        # Save the Feature Matrix
         self.node_features_X = product_features_encoded[feature_cols].values
         
         print(f"Shape of Node Feature Matrix (X): {self.node_features_X.shape}")
@@ -189,7 +174,7 @@ class DataPreprocessor:
 
     def create_demand_time_series(self, num_weeks: int = 100, split_ratio: float = 0.8, temporal_agg_factor: int = 4) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Creates demand time series (aggregated slots) and performs the train/test split.
+        Creates demand time series and performs the train/test split.
         `temporal_agg_factor` controls the aggregation (Standard: 4 for a monthly-like slot).
         """
         prior_df = self._data.get_df('prior')
@@ -203,7 +188,7 @@ class DataPreprocessor:
         # Only merge the orders that exist in the sampled set (already filtered in DataLoader)
         df_merged = pd.merge(prior_df, orders_df[['order_id']], on='order_id', how='inner')
 
-        # 1. Creation of the initial, finer (e.g., weekly) slots based on Order ID
+        # Creation of the initial, finer slots based on Order ID
         max_order_id = df_merged['order_id'].max()
         # Define bins for discretization of order IDs into time slots
         bins = np.linspace(df_merged['order_id'].min(), max_order_id, num_initial_slots + 1)
@@ -215,22 +200,16 @@ class DataPreprocessor:
             include_lowest=True
         ).astype('Int64') + 1
 
-        # 2. Creation of the aggregated (e.g., monthly) slots
-        # Group fine slots into coarser slots using integer division
+        # Creation of the aggregated slots
         df_merged['week_slot'] = ((df_merged['week_slot_fine'] - 1) // temporal_agg_factor) + 1
         
-        # 3. Aggregation: Count demand per product per aggregated slot
+        # Count demand per product per aggregated slot
         demand_ts = df_merged.groupby(['week_slot', 'product_id']).size().reset_index(name='demand')
         # Pivot to create the Time Series matrix (Time Slots x Products)
         demand_matrix = demand_ts.pivot(index='week_slot', columns='product_id', values='demand').fillna(0)
-        
-        # Ensure only the required number of final slots are used (in case of uneven binning)
         demand_matrix = demand_matrix.head(num_final_slots)
-        
-        # Ensure all product columns are present, filling missing products with 0 demand
         demand_matrix = demand_matrix.reindex(columns=self.product_nodes, fill_value=0)
 
-        # Splitting
         split_point = int(demand_matrix.shape[0] * split_ratio)
         train_ts = demand_matrix.iloc[:split_point, :]
         test_ts = demand_matrix.iloc[split_point:, :]
@@ -241,14 +220,10 @@ class DataPreprocessor:
     def build_graph_data(self, threshold: int = 10) -> Data:
         """
         Constructs the static product graph based on co-purchase patterns.
-        Requires create_node_features to be run first.
         """
-        if self.node_features_X is None:
-             raise ValueError("Node features must be created before building the graph.")
-        
         print(f"Calculating co-purchase edges (threshold >= {threshold})...")
         
-        # 1. Self-Join to generate all product pairs within each order
+        # Self-Join to generate all product pairs within each order
         df_pairs = pd.merge(
             self.prior_data_for_graph,
             self.prior_data_for_graph,
@@ -256,14 +231,13 @@ class DataPreprocessor:
             suffixes=('_A', '_B')
         )
 
-        # 2. Filter: Exclude self-loops (product_id_A == product_id_B) and only keep unique direction (A < B)
-        # This ensures we count each unique co-purchase pair only once
+        # Exclude self-loops (product_id_A == product_id_B) and only keep unique direction (A < B). This ensures we count each unique co-purchase pair only once
         df_pairs = df_pairs[df_pairs['product_id_A'] < df_pairs['product_id_B']]
 
-        # 3. Count the frequency of each unique pair
+        # Count the frequency of each unique pair
         co_purchase_counts = df_pairs.groupby(['product_id_A', 'product_id_B']).size().reset_index(name='co_frequency')
         
-        # 4. Filter by co-purchase threshold
+        # Filter by co-purchase threshold
         co_purchase_edges = co_purchase_counts[co_purchase_counts['co_frequency'] >= threshold]
         
         print(f"Found edge pairs (one-sided): {len(co_purchase_edges)}")
@@ -287,7 +261,6 @@ class DataPreprocessor:
                 edge_weight_list.append(weight)
 
         if not edge_index_list:
-             print("ERROR: No edges found. Consider adjusting the threshold.")
              # Create empty tensors if no edges were found
              edge_index = torch.empty((2, 0), dtype=torch.long)
              edge_weight = torch.empty(0, dtype=torch.float)

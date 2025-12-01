@@ -1,10 +1,3 @@
-## config.yaml
-
-# GLOBAL EXECUTION SETTINGS
-
-# If set to True, the script will run the hyperparameter grid search defined below.
-# If False, the script will run a single training/evaluation cycle using the default
-# parameters defined in the 'MODEL_DEFAULTS' section.
 RUN_GRID_SEARCH: False
 
 # 1. DATA CONFIGURATION
@@ -18,7 +11,7 @@ DATA:
     departments: 'data/departments.csv'
 
   # Time-based sampling rate for initial data loading (e.g., 0.1 for 10% of orders)
-  SAMPLING_FRACTION: 0.01
+  SAMPLING_FRACTION: 1
   
   # Total number of aggregated time slots (e.g., months) to generate
   TIME_SERIES_SLOTS: 150
@@ -42,7 +35,7 @@ TRAINING:
   OUTPUT_SEQUENCE_LENGTH: 1
   
   # Number of training epochs
-  EPOCHS: 2
+  EPOCHS: 50
   
   # Batch size for DataLoader
   BATCH_SIZE: 8
