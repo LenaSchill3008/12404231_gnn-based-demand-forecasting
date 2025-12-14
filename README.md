@@ -130,7 +130,7 @@ Due to performance and resource constraints, the model was trained and evaluated
 
 **Description**
 
-This is the internal loss function used during training. It is optimized because the target variable (demand count) is sparse, non-negative integer data (counts), which is better modeled by a Poisson distribution than a standard Gausian distribution assumed by MSE. The Poisson NLL loss naturally encourages the model to output non-negative predictions (counts). The evolution of this metric over the epochs can be found in the `plots` directory under the file `training_loss_evolution.png`.
+This is the internal loss function used during training. It is optimized because the target variable (demand count) is sparse, non-negative integer data (counts), which is better modeled by a Poisson distribution than a standard Gausian distribution assumed by MSE. The Poisson NLL loss naturally encourages the model to output non-negative predictions (counts). 
 
 ## B. Evaluation Metric (Final Performance)
 
