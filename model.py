@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GATConv 
 import numpy as np
 import pandas as pd
 import os
@@ -9,6 +9,7 @@ from torch_geometric.data import Data
 from tqdm import tqdm
 from typing import Tuple, Dict, Any, List
 import itertools
+import matplotlib.pyplot as plt
 
 def _get_batch_size_and_num_nodes(tensor: torch.Tensor) -> Tuple[int, int, int]:
     """Extracts batch size (B), sequence length (L), and number of nodes (N) from the demand sequence tensor."""
@@ -21,7 +22,7 @@ class GNNForecastingModel(nn.Module):
     """
     The complete GNN-LSTM hybrid model for time series forecasting on graphs.
     """
-    def __init__(self, node_features: int, num_nodes: int, input_len: int, output_len: int, hidden_dim: int = 64, gnn_layers: int = 2, lr: float = 0.001):
+    def __init__(self, node_features: int, num_nodes: int, input_len: int, output_len: int, hidden_dim: int = 64, gnn_layers: int = 2, lr: float = 0.001, dropout_rate: float = 0.3):
         super(GNNForecastingModel, self).__init__()
 
         # Hyperparameters
@@ -31,13 +32,20 @@ class GNNForecastingModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.lr = lr
         self.gnn_layers = gnn_layers
+        self.dropout_rate = dropout_rate
 
-        # GNN  
+        # GNN (GATConv) layers
         self.gcn_layers = nn.ModuleList()
         input_dim = node_features
-        for _ in range(self.gnn_layers):
-            self.gcn_layers.append(GCNConv(input_dim, hidden_dim))
-            input_dim = hidden_dim
+        for i in range(self.gnn_layers):
+            if i < self.gnn_layers - 1:
+                # Intermediate layers: Multi-Head GAT with concatenation
+                self.gcn_layers.append(GATConv(input_dim, hidden_dim, heads=4, dropout=dropout_rate))
+                input_dim = hidden_dim * 4
+            else:
+                # Last layer: Single-Head GAT, to project to hidden_dim for the LSTM
+                self.gcn_layers.append(GATConv(input_dim, hidden_dim, heads=1, concat=False, dropout=dropout_rate))
+                input_dim = hidden_dim
 
         # LSTM 
         self.lstm = nn.LSTM(
@@ -47,11 +55,12 @@ class GNNForecastingModel(nn.Module):
             batch_first=True
         )
 
-        # The final Output Layer processes concatenated features
-        # Combined Features = LSTM Output (Hidden_Dim) + GNN Output (Hidden_Dim)
+        # The final Output Layer
         COMBINED_DIM = hidden_dim * 2
         self.output_layer = nn.Linear(COMBINED_DIM, output_len)
-        self.criterion = nn.MSELoss()
+        
+        # Poisson NLL Loss for count data
+        self.criterion = nn.PoissonNLLLoss(log_input=False, reduction='mean') 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def get_device(self) -> torch.device:
@@ -66,37 +75,45 @@ class GNNForecastingModel(nn.Module):
 
         # Static GNN Processing 
         h_static = x_static
-        for gcn in self.gcn_layers:
-            h_static = torch.relu(gcn(h_static, edge_index, edge_weight=edge_attr))
+        for gnn_layer in self.gcn_layers:
+            # GATConv does not take edge_attr/edge_weight
+            h_static = torch.relu(gnn_layer(h_static, edge_index)) 
 
         # Sequence Preparation for LSTM
+        # Shape: [B, L, N] -> [B, N, L] -> [B*N, L] -> [B*N, L, 1]
         demand_seq_final = demand_seq.permute(0, 2, 1).reshape(-1, L).unsqueeze(-1)
 
         # Initial hidden state (h0) and cell state (c0) are initialized with GNN features
         h0_expanded = h_static.unsqueeze(0).expand(B, N, self.hidden_dim)
         h0 = h0_expanded.reshape(B * N, self.hidden_dim).unsqueeze(0).contiguous()
-        c0 = torch.zeros_like(h0)
+        c0 = h0.clone() # c0 is initialized with GNN features as well
 
         # Pass through LSTM
         _, (hn, _) = self.lstm(demand_seq_final, (h0, c0))
         final_lstm_output = hn[-1] 
 
         # Feature Concatenation and Prediction
-        # Repeat GNN Output to match the batched LSTM output structure
+        # Shape h_static_repeated: [B*N, Hidden_Dim]
         h_static_repeated = h_static.unsqueeze(0).expand(B, N, self.hidden_dim).reshape(B * N, self.hidden_dim)
         combined_features = torch.cat((final_lstm_output, h_static_repeated), dim=1)
 
         # Final Linear Layer for multi-step prediction
         predictions_flat = self.output_layer(combined_features) 
+        
+        # ReLU for non-negative predictions (since we use Poisson NLL)
+        predictions_flat = torch.relu(predictions_flat) 
+        
+        # Shape: [B*N, H] -> [B, N, H]
         predictions = predictions_flat.view(B, N, -1)
 
         return predictions
+
 
 class ModelTrainer:
     """
     Handles training, evaluation, checkpointing, and data preparation.
     """
-    def __init__(self, model: GNNForecastingModel):
+    def __init__(self, model: GNNForecastingModel, preprocessor=None):
         self.model = model
         self.input_len = model.input_len
         self.output_len = model.output_len
@@ -104,6 +121,8 @@ class ModelTrainer:
         self.optimizer = model.optimizer
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
+        self.preprocessor = preprocessor 
+        self.training_loss_history: List[float] = [] 
 
     def save_checkpoint(self, path: str, epoch: int, loss: float):
         """Saves the current model and optimizer state to a checkpoint file."""
@@ -168,15 +187,41 @@ class ModelTrainer:
             output_len=self.output_len,
             hidden_dim=params.get('hidden_dim', 64),
             gnn_layers=params.get('gnn_layers', 2),
-            lr=params.get('lr', 0.001)
+            lr=params.get('lr', 0.001),
+            dropout_rate=params.get('dropout_rate', 0.3)
         )
         model.to(self.device)
         return model
+        
+    def _plot_training_loss(self, epochs: int, plot_dir: str = 'plots'):
+        """
+        Creates and saves a plot of the training loss history.
+        """
+        if not self.training_loss_history:
+            return
+
+        os.makedirs(plot_dir, exist_ok=True)
+        plot_path = os.path.join(plot_dir, 'training_loss_evolution.png')
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, epochs + 1), self.training_loss_history, marker='o', linestyle='-', color='blue')
+        plt.title('Training Loss (Poisson NLL) Evolution')
+        plt.xlabel('Epoch')
+        plt.ylabel('Average Loss')
+        plt.grid(True)
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Training loss plot saved to {plot_path}")
 
     def train_model(self, graph_data: Data, train_ts: pd.DataFrame, epochs: int = 50, checkpoint_dir: str = 'model_checkpoints', save_interval: int = 10, batch_size: int = 32):
-        """Executes the training process and saves checkpoints using mini-batching."""
-        
-        print(f"\nStarting training for {epochs} epochs with batch size {batch_size} on device: {self.device} (Full GNN-LSTM)...")
+        """
+        Executes the training process using raw count data.
+        """
+        if graph_data.edge_index.shape[1] == 0:
+            print("WARNING: Graph has no edges. Training skipped.")
+            return
+
+        print(f"\nStarting training for {epochs} epochs with batch size {batch_size} on device: {self.device} (Full GNN-LSTM with raw counts)...")
 
         X_train, Y_train = self._create_sequences(train_ts)
         if X_train.shape[0] == 0: return
@@ -185,6 +230,8 @@ class ModelTrainer:
         train_loader = TorchDataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
         x_static, edge_index, edge_attr = self._prepare_graph_data(graph_data)
+        
+        self.training_loss_history = [] 
 
         self.model.train()
         for epoch in range(1, epochs + 1):
@@ -197,54 +244,79 @@ class ModelTrainer:
                 batch_y = batch_y.to(self.device)
                 
                 predictions = self.model.forward(x_static, edge_index, edge_attr, batch_x)
-
-                target_y_permuted = batch_y.permute(0, 2, 1) # [B, H, N] -> [B, N, H]
-
+                target_y_permuted = batch_y.permute(0, 2, 1) # Targets permuten: [B, L_out, N] -> [B, N, H] 
                 loss = self.criterion(predictions, target_y_permuted)
+                
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
                 epoch_iterator.set_postfix(loss=f"{loss.item():.4f}")
             
             avg_loss = total_loss / len(train_loader)
+            self.training_loss_history.append(avg_loss) 
 
             if epoch % save_interval == 0 or epoch == epochs:
-                print(f"Epoch [{epoch}/{epochs}], Training Loss (MSE): {avg_loss:.6f}")
+                print(f"Epoch [{epoch}/{epochs}], Training Loss (Poisson NLL): {avg_loss:.6f}")
                 checkpoint_path = os.path.join(checkpoint_dir, f'model_checkpoint_e{epoch}.pt')
                 self.save_checkpoint(checkpoint_path, epoch, avg_loss)
+        
+        self._plot_training_loss(epochs)
 
         print("Training complete.")
 
     def evaluate_model(self, graph_data: Data, test_ts: pd.DataFrame, batch_size: int = 32) -> float:
-        """Evaluates the model on the test time series data."""
+        """
+        Evaluates the model on the raw count test time series data.
+        """
 
         X_test, Y_test = self._create_sequences(test_ts)
-        if X_test.shape[0] == 0: return 0.0
+        if X_test.shape[0] == 0: 
+            print("Not enough test data to create sequences. Evaluation skipped.")
+            return 0.0
 
         test_dataset = TensorDataset(X_test, Y_test)
         test_loader = TorchDataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         x_static, edge_index, edge_attr = self._prepare_graph_data(graph_data)
-
-        total_loss = 0.0
+        
+        # Use MSE with reduction='sum' for manual averaging
+        mean_squared_error_criterion = nn.MSELoss(reduction='sum') 
+        total_final_mse = 0.0
+        total_elements = 0
+        
         self.model.eval()
         with torch.no_grad():
             for batch_x, batch_y in test_loader:
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
 
-                test_predictions = self.model.forward(x_static, edge_index, edge_attr, batch_x)
-                target_y_permuted = batch_y.permute(0, 2, 1) # [B, H, N] -> [B, N, H]
+                # 1. Prediction (raw count)
+                predictions = self.model.forward(x_static, edge_index, edge_attr, batch_x)
 
-                test_loss = self.criterion(test_predictions, target_y_permuted)
-                total_loss += test_loss.item()
+                # 2. Targets: [B, L_out, N] -> [B, N, H] 
+                target_reshaped = batch_y.permute(0, 2, 1) 
+                
+                # 3. Targets and Predictions are already unscaled (raw counts)
+                unscaled_predictions_tensor = predictions
+                unscaled_target_tensor = target_reshaped
+                
+                # 4. Ensure non-negativity for RMSE (Predictions already have ReLU)
+                unscaled_target_tensor = torch.relu(unscaled_target_tensor)
+                
+                # 5. Calculation of the Sum of Squared Errors (SSE)
+                test_loss = mean_squared_error_criterion(unscaled_predictions_tensor, unscaled_target_tensor)
+                total_final_mse += test_loss.item()
+                total_elements += unscaled_predictions_tensor.numel()
 
-            avg_loss = total_loss / len(test_loader)
-
+        # Calculation of the AVG final MSE and RMSE
+        average_final_mse = total_final_mse / total_elements
+        # Convert to float/Tensor to calculate and return the pure Python float value
+        average_final_rmse = torch.sqrt(torch.tensor(average_final_mse, dtype=torch.float)).item()
+        
         print(f"Test Sequences created: {X_test.shape[0]} total, in {len(test_loader)} batches.")
-        print(f"Test Loss (MSE): {avg_loss:.6f}")
+        print(f"Test Loss (Final RMSE on unscaled data): {average_final_rmse:.6f}")
 
-        return avg_loss
+        return average_final_rmse
 
     def grid_search(self, param_grid: Dict[str, List[Any]], graph_data: Data, train_ts: pd.DataFrame, test_ts: pd.DataFrame, epochs: int = 50, batch_size: int = 32) -> Tuple[Dict[str, Any], float]:
         """
@@ -265,17 +337,17 @@ class ModelTrainer:
 
         print(f"\nStarting Grid Search ({len(combinations)} total combinations)")
         
-        for i, params in enumerate(combinations):
+        for i, params in tqdm(enumerate(combinations), total=len(combinations), desc="Grid Search Configurations"):
             print(f"\nConfiguration {i + 1}/{len(combinations)}: {params}")
             
             # Initialize a new model and trainer instance for the current config
             current_model = self._initialize_model(node_features, num_nodes, params)
-            current_trainer = ModelTrainer(current_model)
+            current_trainer = ModelTrainer(current_model) 
             
             # Train the model 
             current_trainer.train_model(graph_data, train_ts, epochs=epochs, batch_size=batch_size, checkpoint_dir='temp_grid_search', save_interval=epochs + 1)
             
-            # Evaluate the model on the test set
+            # Evaluate the model on the test set 
             test_loss = current_trainer.evaluate_model(graph_data, test_ts, batch_size=batch_size)
             
             # Store result
@@ -283,13 +355,13 @@ class ModelTrainer:
             results.append(current_result)
             
             # Check if this is the best result so far?
-            if test_loss < best_loss:
+            if test_loss < best_loss and test_loss > 0.0:
                 best_loss = test_loss
                 best_params = params
-                print(f"NEW BEST LOSS found: {best_loss:.6f}")
+                print(f"NEW BEST RMSE found: {best_loss:.6f}")
 
         print("\n--- Grid Search Complete ---")
-        print(f"Best Loss: {best_loss:.6f}")
+        print(f"Best Loss (RMSE): {best_loss:.6f}")
         print(f"Best Parameters: {best_params}")
         
         return best_params, best_loss

@@ -6,12 +6,19 @@ from torch_geometric.data import Data
 from typing import Dict, Any, List, Tuple
 from data_loader_preprocessor import DataLoader, DataPreprocessor
 from model import GNNForecastingModel, ModelTrainer
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 def load_config(config_path: str = 'config.yaml') -> Dict[str, Any]:
     """Loads configuration parameters from a YAML file."""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        print(f"ERROR: Configuration file '{config_path}' not found.")
+        raise
 
 class Orchestrator:
     """
@@ -23,6 +30,7 @@ class Orchestrator:
         self.product_graph: Data | None = None
         self.train_ts: pd.DataFrame | None = None
         self.test_ts: pd.DataFrame | None = None
+        self.preprocessor: DataPreprocessor | None = None 
         self.num_nodes: int = 0
         self.node_features_F: int = 0
 
@@ -31,39 +39,38 @@ class Orchestrator:
         print("\n--- 1. DATA LOADING & PREPROCESSING ---")
         data_config = self.config['DATA']
         
-        # Data Loading
         loader = DataLoader(data_config['FILE_PATHS'], sampling_rate=data_config['SAMPLING_FRACTION'])
         data_instance = loader.load_data()
         if data_instance is None:
             raise RuntimeError("Data loading failed.")
 
-        # Preprocessing, Features, and Graph Construction
-        preprocessor = DataPreprocessor(data_instance)
+        self.preprocessor = DataPreprocessor(data_instance) 
         
-        node_features_X = preprocessor.create_node_features()
-        self.num_nodes = len(preprocessor.product_nodes)
+        node_features_X = self.preprocessor.create_node_features()
+        self.num_nodes = len(self.preprocessor.product_nodes)
         self.node_features_F = node_features_X.shape[1]
         
-        self.train_ts, self.test_ts = preprocessor.create_demand_time_series(
+        self.train_ts, self.test_ts = self.preprocessor.create_demand_time_series(
             num_weeks=data_config['TIME_SERIES_SLOTS'], 
             split_ratio=data_config['SPLIT_RATIO'],
             temporal_agg_factor=data_config['TEMPORAL_AGG_FACTOR']
         )
+
+        self.train_ts, self.test_ts = self.preprocessor.scale_time_series(self.train_ts, self.test_ts)
         
-        self.product_graph = preprocessor.build_graph_data(threshold=data_config['EDGE_THRESHOLD'])
+        self.product_graph = self.preprocessor.build_graph_data(threshold=data_config['EDGE_THRESHOLD'])
         
-        # Print intermediate results
-        training_config = self.config['TRAINING']
-        input_len = training_config['INPUT_SEQUENCE_LENGTH']
-        output_len = training_config['OUTPUT_SEQUENCE_LENGTH']
-    
+        if self.product_graph.x is None or self.product_graph.x.shape[1] == 0:
+            raise RuntimeError("Graph creation failed: No valid node features found.")
+        if self.product_graph.edge_index.shape[1] == 0:
+            print("WARNING: Graph has no edges. GNN will act like a simple Linear Layer.")
+
 
     def _initialize_trainer(self) -> ModelTrainer:
         """Initializes the Model and the Trainer."""
         training_config = self.config['TRAINING']
         model_defaults = self.config['MODEL_DEFAULTS']
 
-        # Initialize model with default hyperparameters
         base_model = GNNForecastingModel( 
             num_nodes=self.num_nodes, 
             node_features=self.node_features_F, 
@@ -71,9 +78,10 @@ class Orchestrator:
             output_len=training_config['OUTPUT_SEQUENCE_LENGTH'],
             hidden_dim=model_defaults['HIDDEN_DIM'],
             gnn_layers=model_defaults['GNN_LAYERS'],
-            lr=model_defaults['LR']
+            lr=model_defaults['LR'],
+            dropout_rate=model_defaults.get('DROPOUT_RATE', 0.3) 
         )
-        return ModelTrainer(base_model)
+        return ModelTrainer(base_model) 
 
     def _execute_single_run(self, trainer: ModelTrainer):
         """Executes a single training and evaluation cycle."""
@@ -81,7 +89,6 @@ class Orchestrator:
         
         print("--- 2. SINGLE MODEL TRAINING & EVALUATION ---")
         
-        # Training
         trainer.train_model(
             graph_data=self.product_graph, 
             train_ts=self.train_ts, 
@@ -90,7 +97,6 @@ class Orchestrator:
             batch_size=training_config['BATCH_SIZE']
         )
 
-        # Evaluation
         trainer.evaluate_model(self.product_graph, self.test_ts, batch_size=training_config['BATCH_SIZE'])
 
     def _execute_grid_search(self, trainer: ModelTrainer):
@@ -112,7 +118,7 @@ class Orchestrator:
             epochs=training_config['EPOCHS'],
             batch_size=training_config['BATCH_SIZE']
         )
-        print(f"\nOptimal Configuration found: {best_params} with Test MSE: {best_loss:.6f}")
+        print(f"\nOptimal Configuration found: {best_params} with Test RMSE: {best_loss:.6f}")
 
     def run(self):
         """Main execution method to run the workflow based on the config flag."""
@@ -126,7 +132,7 @@ class Orchestrator:
                 self._execute_single_run(trainer)
 
         except RuntimeError as e:
-            print(f"FATAL ERROR during workflow execution: {e}")
+            print(f"ERROR during workflow execution: {e}")
             return
         
         print("\n--- EXECUTION COMPLETE ---")
@@ -136,7 +142,8 @@ def main():
     """Loads configuration and runs the Orchestrator."""
     try:
         config = load_config()
-    except Exception:
+    except Exception as e:
+        print(f"Could not load configuration: {e}")
         return
         
     orchestrator = Orchestrator(config)
