@@ -95,11 +95,28 @@ python main.py
 ```
 
 ### B. Inference
-Run the following to generate multi-step forecasts for a specific product:
+The system includes a FastAPI backend to serve model predictions and a Streamlit frontend for interactive visualization.
 
-# TODO
+Starting the Services
+To run the full stack, open two terminal windows:
 
-The script prompts for a product name and generates a visualization showing historical demand and the deterministic forecast.
+## 1. Start the Backend (FastAPI): The API handles the recursive inference logic and serves the GNN-LSTM model.
+
+```bash
+uvicorn api_inference:app --host 0.0.0.0 --port 8000 --reload
+```
+
+## 2. Start the Frontend (Streamlit): The dashboard allows you to select products and visualize historical vs. forecasted demand.
+
+```bash
+streamlit run ./streamlit_frontend.py
+```
+
+## API Endpoints
+
+- GET /products: Returns a mapping of all product IDs and names available in the graph.
+- POST /predict/{product_id}: Generates a recursive forecast (1, 3, or 6 months) for the specified product.
+- GET /health: Checks if the model, graph, and product metadata are correctly loaded.
 
 ## 4.Work Breakdown Structure and Time Log
 
@@ -110,7 +127,8 @@ The script prompts for a product name and generates a visualization showing hist
 | 3. Model Implementation (GNN–LSTM)     | `GNNForecastingModel` definition and coupled forward pass                                       | 40           |
 | 4. Training Utilities                  | `ModelTrainer` implementation, evaluation, checkpointing, grid search                           | 8            |
 | 5. Configuration & Documentation       | Creating `config.yaml` and writing documentation                                                | 2            |
-| **TOTAL ESTIMATED TIME**               | Sum of all tasks                                                                                | 90           |
+| 6. Configuration & Documentation       | Creating Demo Application and Inference                                                         | 30           |
+| **TOTAL ESTIMATED TIME**               | Sum of all tasks                                                                                | 110          |
 
 ## 5. Error Metrics and Performance
 
@@ -141,3 +159,5 @@ This is the internal loss function used during training. It is optimized because
 **Description**
 
 RMSE is the definitive measure of forecast accuracy, returning the average magnitude of the error in the original units of the demand count (e.g., number of items sold). The squaring of the errors within RMSE ensures that larger forecast errors are penalized more heavily than smaller errors, making it a conservative and robust metric for measuring the consistency of the forecast. The RMSE is calculated directly on the unscaled, true demand values.
+
+
