@@ -127,7 +127,7 @@ streamlit run ./streamlit_frontend.py
 | 3. Model Implementation (GNN–LSTM)     | `GNNForecastingModel` definition and coupled forward pass                                       | 40           |
 | 4. Training Utilities                  | `ModelTrainer` implementation, evaluation, checkpointing, grid search                           | 8            |
 | 5. Configuration & Documentation       | Creating `config.yaml` and writing documentation                                                | 2            |
-| 6. Configuration & Documentation       | Creating Demo Application and Inference                                                         | 30           |
+| 6. Demo                                | Creating Demo Application and Inference                                                         | 30           |
 | **TOTAL ESTIMATED TIME**               | Sum of all tasks                                                                                | 110          |
 
 ## 5. Error Metrics and Performance
@@ -135,10 +135,6 @@ streamlit run ./streamlit_frontend.py
 The primary goal of this project is to predict future demand counts. The training process uses a specialized loss function for optimization, but the model's final performance is measured using an intuitive, unscaled error metric relevant to real-world demand forecasting (RMSE).
 
 ---
-
-## Data Constraint
-
-Due to performance and resource constraints, the model was trained and evaluated on only **10% of the total Instacart data**, specifically using **time-based sampling** to ensure sequence integrity. This limits the model's exposure to the complete product catalog and seasonal patterns, contributing to the achieved error metrics. For the final model for assignment 3 I will train the full model on the full dataset on 50 epochs to get more accurate inference results. Since this model is very small I uploaded it to GitHub. For the larger model I will upload to Github LFS.
 
 ## A. Training Loss (Optimization Metric)
 
