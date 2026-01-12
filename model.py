@@ -279,7 +279,6 @@ class ModelTrainer:
 
         x_static, edge_index, edge_attr = self._prepare_graph_data(graph_data)
         
-        # Use MSE with reduction='sum' for manual averaging
         mean_squared_error_criterion = nn.MSELoss(reduction='sum') 
         total_final_mse = 0.0
         total_elements = 0
@@ -290,20 +289,20 @@ class ModelTrainer:
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
 
-                # 1. Prediction (raw count)
+                # Prediction (raw count)
                 predictions = self.model.forward(x_static, edge_index, edge_attr, batch_x)
 
-                # 2. Targets: [B, L_out, N] -> [B, N, H] 
+                # Targets: [B, L_out, N] -> [B, N, H] 
                 target_reshaped = batch_y.permute(0, 2, 1) 
                 
-                # 3. Targets and Predictions are already unscaled (raw counts)
+                # Targets and Predictions are already unscaled (raw counts)
                 unscaled_predictions_tensor = predictions
                 unscaled_target_tensor = target_reshaped
                 
-                # 4. Ensure non-negativity for RMSE (Predictions already have ReLU)
+                # Ensure non-negativity for RMSE (Predictions already have ReLU)
                 unscaled_target_tensor = torch.relu(unscaled_target_tensor)
                 
-                # 5. Calculation of the Sum of Squared Errors (SSE)
+                # Calculation of the Sum of Squared Errors (SSE)
                 test_loss = mean_squared_error_criterion(unscaled_predictions_tensor, unscaled_target_tensor)
                 total_final_mse += test_loss.item()
                 total_elements += unscaled_predictions_tensor.numel()

@@ -58,7 +58,14 @@ class Orchestrator:
 
         self.train_ts, self.test_ts = self.preprocessor.scale_time_series(self.train_ts, self.test_ts)
         
-        self.product_graph = self.preprocessor.build_graph_data(threshold=data_config['EDGE_THRESHOLD'])
+        # --- GRAPH CACHING ANPASSUNG ---
+        cache_dir = self.config.get('CACHE_DIR', 'cache')
+        graph_cache_path = os.path.join(cache_dir, 'product_graph.pt')
+        
+        self.product_graph = self.preprocessor.build_graph_data(
+            threshold=data_config['EDGE_THRESHOLD'],
+            cache_path=graph_cache_path # Neuer Parameter
+        )
         
         if self.product_graph.x is None or self.product_graph.x.shape[1] == 0:
             raise RuntimeError("Graph creation failed: No valid node features found.")

@@ -1,4 +1,6 @@
+# 0. RUN CONFIGURATION
 RUN_GRID_SEARCH: False
+CACHE_DIR: 'cache' 
 
 # 1. DATA CONFIGURATION
 DATA:
@@ -9,7 +11,7 @@ DATA:
     aisles: 'data/aisles.csv'
     departments: 'data/departments.csv'
 
-  SAMPLING_FRACTION: 0.1
+  SAMPLING_FRACTION: 1
   
   TIME_SERIES_SLOTS: 150
 
@@ -23,7 +25,7 @@ DATA:
 # 2. MODEL DEFAULTS & TRAINING CONFIGURATION
 TRAINING:
   INPUT_SEQUENCE_LENGTH: 12
-  
+
   OUTPUT_SEQUENCE_LENGTH: 1
   
   EPOCHS: 10

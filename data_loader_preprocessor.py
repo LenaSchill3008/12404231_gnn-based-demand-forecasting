@@ -167,8 +167,8 @@ class DataPreprocessor:
             if col.startswith(('aisle_', 'dept_', 'global_frequency_norm'))
         ]
         
-        # Store the feature matrix
-        self.node_features_X = product_features_encoded[feature_cols].values
+        # Store the feature matrix and ensure it is of type float32 for PyTorch compatibility
+        self.node_features_X = product_features_encoded[feature_cols].values.astype(np.float32)
         
         print(f"Shape of Node Feature Matrix (X): {self.node_features_X.shape}")
         return self.node_features_X
@@ -229,13 +229,55 @@ class DataPreprocessor:
         
         return unscaled_tensor
 
+    def _save_graph(self, graph_data: Data, path: str):
+        """Saves the PyG Data object to a file."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(graph_data, path)
+        print(f"PyG Graph saved to: {path}")
 
-    def build_graph_data(self, threshold: int = 10) -> Data:
+    def _load_graph(self, path: str) -> Union[Data, None]:
+        """Loads the PyG Data object from the cache if it exists."""
+        if os.path.exists(path):
+            try:
+                # Ensure node features are created before loading to check consistency
+                if self.node_features_X is None:
+                    self.create_node_features()
+
+                graph_data = torch.load(path)
+                
+                # Check for dimensional consistency
+                if graph_data.num_nodes == len(self.product_nodes) and graph_data.x.shape[1] == self.node_features_X.shape[1]:
+                    print(f"PyG Graph successfully loaded from cache: {path}")
+                    self.node_features_X = graph_data.x.cpu().numpy()
+                    return graph_data
+                else:
+                    print("WARNING: Loaded graph has inconsistent dimensions. Rebuilding.")
+                    return None
+            except Exception as e:
+                print(f"Error loading graph cache: {e}. Rebuilding.")
+                return None
+        return None
+
+    def build_graph_data(self, threshold: int = 10, cache_path: str = 'cache/product_graph.pt') -> Data:
         """
-        Constructs the static product graph based on co-purchase patterns with normalized edge weights.
+        Constructs the static product graph or loads it from the cache, if available.
         """
+        # Attempt to load graph from cache
+        if os.path.exists(cache_path):
+             # Ensure node features are computed 
+             if self.node_features_X is None:
+                  self.create_node_features()
+             cached_graph = self._load_graph(cache_path)
+             if cached_graph is not None:
+                  return cached_graph
+
+        # If not in cache, perform the computationally expensive construction
         print(f"Calculating co-purchase edges (threshold >= {threshold})...")
         
+        # Ensure node features are computed 
+        if self.node_features_X is None:
+             self.create_node_features()
+             
         df_pairs = pd.merge(
             self.prior_data_for_graph,
             self.prior_data_for_graph,
@@ -265,22 +307,28 @@ class DataPreprocessor:
             weight = row['normalized_weight']
             
             if u is not None and v is not None:
-                # Undirected graph
+                # Create undirected edges
                 edge_index_list.append([u, v])
                 edge_index_list.append([v, u])
                 edge_weight_list.append(weight)
                 edge_weight_list.append(weight)
 
         if not edge_index_list:
+             # Handle case with no edges
              edge_index = torch.empty((2, 0), dtype=torch.long)
              edge_weight = torch.empty(0, dtype=torch.float)
         else:
              edge_index = torch.tensor(edge_index_list, dtype=torch.long).t().contiguous()
              edge_weight = torch.tensor(edge_weight_list, dtype=torch.float)
 
+        # Node features (X)
         x = torch.tensor(self.node_features_X, dtype=torch.float)
 
         product_graph = Data(x=x, edge_index=edge_index, edge_attr=edge_weight, num_nodes=num_nodes)
         
         print(f"PyG Graph created: {product_graph}")
+        
+        # Save graph before returning
+        self._save_graph(product_graph, cache_path)
+        
         return product_graph
