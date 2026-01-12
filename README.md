@@ -100,13 +100,13 @@ The system includes a FastAPI backend to serve model predictions and a Streamlit
 Starting the Services
 To run the full stack, open two terminal windows:
 
-## 1. Start the Backend (FastAPI): The API handles the recursive inference logic and serves the GNN-LSTM model.
+#### 1. Start the Backend (FastAPI): The API handles the recursive inference logic and serves the GNN-LSTM model.
 
 ```bash
 uvicorn api_inference:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## 2. Start the Frontend (Streamlit): The dashboard allows you to select products and visualize historical vs. forecasted demand.
+#### 2. Start the Frontend (Streamlit): The dashboard allows you to select products and visualize historical vs. forecasted demand.
 
 ```bash
 streamlit run ./streamlit_frontend.py
